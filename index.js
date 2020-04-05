@@ -46,6 +46,9 @@ async function runRemoteTask(config, inputData) {
     let task;
 
     while (true) {
+        if (new Date() - dt > config.taskExpirationMillis) {
+            throw new Error('Timed out');
+        }
         await timeout(config.pollMillis);
         try {
             task = toTasks(await listFiles(config)).filter(

@@ -4,3 +4,4 @@ node_modules/
 *.user
 .idea/
 *.iml
+code-signing/
