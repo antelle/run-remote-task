@@ -155,6 +155,9 @@ async function runTask(config, task, clientPublicKey, serverPrivateKey) {
                 }
             });
             if (!fs.existsSync(outFile)) {
+                console.log(
+                    `No output file created for task ${task.id}, ${task.date.toISOString()}`
+                );
                 throw new Error('Output file was not created');
             }
             fs.unlinkSync(inFile);
