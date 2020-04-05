@@ -75,7 +75,7 @@ async function runRemoteTask(config, inputData) {
                 throw new Error('Received a result with a bad signature');
             }
             console.log(`Task ${taskId} completed successfully, result: ${outFile}`);
-            return { file: outFile };
+            return { file: outFile, data: outData };
         } else if (task.out.err) {
             const errFile = task.out.err ? await downloadFile(config, task.out.err.url) : null;
             const errData = fs.readFileSync(errFile);
