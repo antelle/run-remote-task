@@ -10,7 +10,7 @@ It's also fine to use HTTP, unless you're concerned about data being accessible 
 
 This diagram explains the interaction without going too deep into details:
 
-![diagram](docs/diagram.png)
+![diagram](docs/diagram.png | width=589)
 
 ## Usage
 
