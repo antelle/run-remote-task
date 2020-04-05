@@ -1,0 +1,13 @@
+{
+    "server": "http://localhost:8888/dav/",
+    "user": null,
+    "password": null,
+    "clientPublicKey": "demo/public-key-client.pem",
+    "serverPublicKey": "demo/public-key-server.pem",
+    "clientPrivateKey": "demo/private-key-client.pem",
+    "serverPrivateKey": "demo/private-key-server.pem",
+    "pollMillis": 5000,
+    "taskExpirationMillis": 600000,
+    "command": "demo/run_task.sh",
+    "commandRetries": 10
+}

@@ -1,0 +1,11 @@
+.DS_Store
+.editorconfig
+.eslintrc
+.prettierrc
+node_modules/
+*.log
+*.user
+.idea/
+*.iml
+demo/
+docs/
