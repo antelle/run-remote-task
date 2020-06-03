@@ -2,20 +2,25 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const AWS = require('aws-sdk');
 const { execSync } = require('child_process');
 
+function configureHost(config) {
+    if (!config.server && !config.aws) {
+        throw new Error('Server is missing in config, there should be either "server", or "aws"');
+    }
+    if (config.aws) {
+        AWS.config.update(config.aws);
+    }
+}
+
 async function runRemoteTask(config, inputData) {
-    for (const prop of [
-        'server',
-        'clientPrivateKey',
-        'clientPublicKey',
-        'serverPublicKey',
-        'pollMillis'
-    ]) {
+    for (const prop of ['clientPrivateKey', 'clientPublicKey', 'serverPublicKey', 'pollMillis']) {
         if (!config[prop]) {
             throw new Error(`config.${prop} is empty`);
         }
     }
+    configureHost(config);
 
     if (!runRemoteTask.initialized) {
         const clientPrivateKey = fs.readFileSync(config.clientPrivateKey);
@@ -102,24 +107,20 @@ async function runRemoteTask(config, inputData) {
 }
 
 async function startServer(config) {
-    for (const prop of [
-        'server',
-        'serverPrivateKey',
-        'serverPublicKey',
-        'clientPublicKey',
-        'pollMillis'
-    ]) {
+    for (const prop of ['serverPrivateKey', 'serverPublicKey', 'clientPublicKey', 'pollMillis']) {
         if (!config[prop]) {
             throw new Error(`config.${prop} is empty`);
         }
     }
+    configureHost(config);
 
     const serverPrivateKey = fs.readFileSync(config.serverPrivateKey);
     const serverPublicKey = fs.readFileSync(config.serverPublicKey);
     const clientPublicKey = fs.readFileSync(config.clientPublicKey);
     testSign(serverPrivateKey, serverPublicKey, clientPublicKey);
 
-    console.log(`Starting server at ${config.server}...`);
+    const desc = config.server || config.aws ? 'AWS:' + config.aws.bucket : '?';
+    console.log(`Starting server at ${desc}...`);
 
     while (true) {
         try {
@@ -266,6 +267,16 @@ function verify(data, signature, publicKey) {
 
 function upload(config, fileUrl, data) {
     return new Promise((resolve, reject) => {
+        if (config.aws) {
+            const params = { Bucket: config.aws.bucket, StorageClass: 'REDUCED_REDUNDANCY', Key: fileUrl, Body: data };
+            return new AWS.S3().upload(params, async (err) => {
+                if (err) {
+                    console.error('Upload error', err);
+                    return reject(err);
+                }
+                resolve();
+            });
+        }
         const req = proto(config).request(
             config.server + fileUrl,
             {
@@ -291,6 +302,17 @@ function upload(config, fileUrl, data) {
 
 function listFiles(config) {
     return new Promise((resolve, reject) => {
+        if (config.aws) {
+            return new AWS.S3().listObjects({ Bucket: config.aws.bucket }, async (err, data) => {
+                if (err) {
+                    console.error('List error', err);
+                    return reject(err);
+                }
+                const urls = data.Contents.map((item) => item.Key);
+                resolve(await deleteExpiredFiles(config, convertUrls(urls)));
+            });
+        }
+
         const req = proto(config).get(config.server, { headers: getAuthHeader(config) }, (res) => {
             if (res.statusCode !== 200) {
                 console.error(`Poll error: HTTP status code ${res.statusCode}`);
@@ -300,18 +322,10 @@ function listFiles(config) {
             res.on('data', (chunk) => body.push(chunk));
             res.on('end', async () => {
                 const resStr = Buffer.concat(body).toString('utf8');
-                const files = [...resStr.matchAll(/href="([\w\.\-%]+)"/gi)]
-                    .map((match) => decodeURIComponent(match[1]))
-                    .map((url) => {
-                        const match = url.match(/^(\d+)-(\w+)\.(in|out)\.(dat|sig|err)$/);
-                        if (!match) {
-                            return undefined;
-                        }
-                        const [, date, taskId, inout, ext] = match;
-                        return { date: new Date(+date), taskId, inout, ext, url };
-                    })
-                    .filter((task) => task);
-                resolve(await deleteExpiredFiles(config, files));
+                const urls = [...resStr.matchAll(/href="([\w\.\-%]+)"/gi)].map((match) =>
+                    decodeURIComponent(match[1])
+                );
+                resolve(await deleteExpiredFiles(config, convertUrls(urls)));
             });
         });
         req.on('error', (e) => {
@@ -319,10 +333,35 @@ function listFiles(config) {
             reject('HTTP request error: ' + e);
         });
     });
+
+    function convertUrls(urls) {
+        return urls
+            .map((url) => {
+                const match = url.match(/^(\d+)-(\w+)\.(in|out)\.(dat|sig|err)$/);
+                if (!match) {
+                    return undefined;
+                }
+                const [, date, taskId, inout, ext] = match;
+                return { date: new Date(+date), taskId, inout, ext, url };
+            })
+            .filter((task) => task);
+    }
 }
 
 function downloadFile(config, fileUrl) {
     return new Promise((resolve, reject) => {
+        if (config.aws) {
+            const params = { Bucket: config.aws.bucket, Key: fileUrl }
+            return new AWS.S3().getObject(params, async (err, data) => {
+                if (err) {
+                    console.error('Download error', err);
+                    reject(err);
+                }
+                const fileName = path.join(os.tmpdir(), path.basename(fileUrl));
+                fs.writeFileSync(fileName, data.Body);
+                resolve(fileName);
+            });
+        }
         const req = proto(config).get(
             config.server + fileUrl,
             { headers: getAuthHeader(config) },
@@ -352,6 +391,16 @@ function downloadFile(config, fileUrl) {
 
 function deleteFile(config, fileUrl) {
     return new Promise((resolve, reject) => {
+        if (config.aws) {
+            const params = { Bucket: config.aws.bucket, Key: fileUrl };
+            return new AWS.S3().deleteObject(params, async (err) => {
+                if (err) {
+                    console.error('Delete error', err);
+                    return reject(err);
+                }
+                resolve();
+            });
+        }
         const req = proto(config).request(
             config.server + fileUrl,
             { method: 'DELETE', headers: getAuthHeader(config) },

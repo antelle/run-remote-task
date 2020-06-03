@@ -53,6 +53,26 @@ This diagram explains the interaction without going too deep into details:
     }
     ```
    
+   If you're using AWS S3, the config should look like this:
+   ```json
+   {
+       "aws": {
+           "accessKeyId": "...",
+           "secretAccessKey": "...",
+           "region": "eu-central-1",
+           "bucket": "my-bucket"
+       },
+       "clientPublicKey": "path/to/public-key-client.pem",
+       "serverPublicKey": "path/to/public-key-server.pem",
+       "clientPrivateKey": "path/to/private-key-client.pem",
+       "serverPrivateKey": "path/to/private-key-server.pem",
+       "pollMillis": 5000,
+       "taskExpirationMillis": 600000,
+       "command": "run_task.sh",
+       "commandRetries": 10
+   }
+   ```
+   
    Upload this config to both server and clients.
 
 4. Write your task in `run_task.sh`. Your task receives two environment variables: 

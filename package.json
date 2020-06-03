@@ -1,6 +1,6 @@
 {
     "name": "run-remote-task",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "",
     "main": "index.js",
     "scripts": {
@@ -25,6 +25,7 @@
         "prettier": "^2.0.2"
     },
     "dependencies": {
+        "aws-sdk": "^2.688.0",
         "minimist": "^1.2.5"
     }
 }
