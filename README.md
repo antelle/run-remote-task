@@ -52,8 +52,30 @@ This diagram explains the interaction without going too deep into details:
         "commandRetries": 10
     }
     ```
+
+   If you're using Google Cloud Storage
+   ```json
+   {
+       "gcp": {
+           "projectId": "my-project",
+           "bucketName": "my-bucket",
+           "credentials": {
+               "client_email": "...",
+               "private_key": "..."
+           }
+       },
+       "clientPublicKey": "path/to/public-key-client.pem",
+       "serverPublicKey": "path/to/public-key-server.pem",
+       "clientPrivateKey": "path/to/private-key-client.pem",
+       "serverPrivateKey": "path/to/private-key-server.pem",
+       "pollMillis": 5000,
+       "taskExpirationMillis": 600000,
+       "command": "run_task.sh",
+       "commandRetries": 10
+   }
+   ```
    
-   If you're using AWS S3, the config should look like this:
+   If you're using AWS S3:
    ```json
    {
        "aws": {

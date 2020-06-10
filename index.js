@@ -3,11 +3,14 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const AWS = require('aws-sdk');
+const { Storage } = require('@google-cloud/storage');
 const { execSync } = require('child_process');
 
 function configureHost(config) {
-    if (!config.server && !config.aws) {
-        throw new Error('Server is missing in config, there should be either "server", or "aws"');
+    if (!config.server && !config.aws && !config.gcp) {
+        throw new Error(
+            'Server is missing in config, there should be either of: "server", "aws", "gcp'
+        );
     }
     if (config.aws) {
         AWS.config.update(config.aws);
@@ -119,7 +122,11 @@ async function startServer(config) {
     const clientPublicKey = fs.readFileSync(config.clientPublicKey);
     testSign(serverPrivateKey, serverPublicKey, clientPublicKey);
 
-    const desc = config.server || config.aws ? 'AWS:' + config.aws.bucket : '?';
+    const desc =
+        config.server ||
+        (config.gcp && `GCP:${config.gcp.projectId}/${config.gcp.bucketName}`) ||
+        (config.aws && `AWS:${config.aws.bucket}`) ||
+        '?';
     console.log(`Starting server at ${desc}...`);
 
     while (true) {
@@ -267,8 +274,26 @@ function verify(data, signature, publicKey) {
 
 function upload(config, fileUrl, data) {
     return new Promise((resolve, reject) => {
-        if (config.aws) {
-            const params = { Bucket: config.aws.bucket, StorageClass: 'REDUCED_REDUNDANCY', Key: fileUrl, Body: data };
+        if (config.gcp) {
+            const ws = new Storage(config.gcp)
+                .bucket(config.gcp.bucketName)
+                .file(fileUrl)
+                .createWriteStream();
+            ws.on('error', (err) => {
+                console.error('Upload error', err);
+                reject(err);
+            });
+            ws.on('finish', () => {
+                resolve();
+            });
+            ws.end(data);
+        } else if (config.aws) {
+            const params = {
+                Bucket: config.aws.bucket,
+                StorageClass: 'REDUCED_REDUNDANCY',
+                Key: fileUrl,
+                Body: data
+            };
             return new AWS.S3().upload(params, async (err) => {
                 if (err) {
                     console.error('Upload error', err);
@@ -276,33 +301,43 @@ function upload(config, fileUrl, data) {
                 }
                 resolve();
             });
-        }
-        const req = proto(config).request(
-            config.server + fileUrl,
-            {
-                method: 'PUT',
-                headers: getAuthHeader(config)
-            },
-            (res) => {
-                if (res.statusCode !== 201) {
-                    console.error(`Upload error: HTTP status code ${res.statusCode}`);
-                    return reject(`HTTP status code ${res.statusCode}`);
+        } else {
+            const req = proto(config).request(
+                config.server + fileUrl,
+                {
+                    method: 'PUT',
+                    headers: getAuthHeader(config)
+                },
+                (res) => {
+                    if (res.statusCode !== 201) {
+                        console.error(`Upload error: HTTP status code ${res.statusCode}`);
+                        return reject(`HTTP status code ${res.statusCode}`);
+                    }
+                    resolve();
                 }
-                resolve();
-            }
-        );
-        req.on('error', (e) => {
-            console.error('HTTP request error', e);
-            reject('HTTP request error: ' + e);
-        });
-        req.write(data);
-        req.end();
+            );
+            req.on('error', (e) => {
+                console.error('HTTP request error', e);
+                reject('HTTP request error: ' + e);
+            });
+            req.write(data);
+            req.end();
+        }
     });
 }
 
 function listFiles(config) {
     return new Promise((resolve, reject) => {
-        if (config.aws) {
+        if (config.gcp) {
+            new Storage(config.gcp).bucket(config.gcp.bucketName).getFiles(async (err, files) => {
+                if (err) {
+                    console.error('List error', err);
+                    return reject(err);
+                }
+                const urls = files.map((item) => item.name);
+                resolve(await deleteExpiredFiles(config, convertUrls(urls)));
+            });
+        } else if (config.aws) {
             return new AWS.S3().listObjects({ Bucket: config.aws.bucket }, async (err, data) => {
                 if (err) {
                     console.error('List error', err);
@@ -311,27 +346,31 @@ function listFiles(config) {
                 const urls = data.Contents.map((item) => item.Key);
                 resolve(await deleteExpiredFiles(config, convertUrls(urls)));
             });
-        }
-
-        const req = proto(config).get(config.server, { headers: getAuthHeader(config) }, (res) => {
-            if (res.statusCode !== 200) {
-                console.error(`Poll error: HTTP status code ${res.statusCode}`);
-                return reject(`HTTP status code ${res.statusCode}`);
-            }
-            const body = [];
-            res.on('data', (chunk) => body.push(chunk));
-            res.on('end', async () => {
-                const resStr = Buffer.concat(body).toString('utf8');
-                const urls = [...resStr.matchAll(/href="([\w\.\-%]+)"/gi)].map((match) =>
-                    decodeURIComponent(match[1])
-                );
-                resolve(await deleteExpiredFiles(config, convertUrls(urls)));
+        } else {
+            const req = proto(config).get(
+                config.server,
+                { headers: getAuthHeader(config) },
+                (res) => {
+                    if (res.statusCode !== 200) {
+                        console.error(`Poll error: HTTP status code ${res.statusCode}`);
+                        return reject(`HTTP status code ${res.statusCode}`);
+                    }
+                    const body = [];
+                    res.on('data', (chunk) => body.push(chunk));
+                    res.on('end', async () => {
+                        const resStr = Buffer.concat(body).toString('utf8');
+                        const urls = [...resStr.matchAll(/href="([\w\.\-%]+)"/gi)].map((match) =>
+                            decodeURIComponent(match[1])
+                        );
+                        resolve(await deleteExpiredFiles(config, convertUrls(urls)));
+                    });
+                }
+            );
+            req.on('error', (e) => {
+                console.error('HTTP request error', e);
+                reject('HTTP request error: ' + e);
             });
-        });
-        req.on('error', (e) => {
-            console.error('HTTP request error', e);
-            reject('HTTP request error: ' + e);
-        });
+        }
     });
 
     function convertUrls(urls) {
@@ -350,8 +389,20 @@ function listFiles(config) {
 
 function downloadFile(config, fileUrl) {
     return new Promise((resolve, reject) => {
-        if (config.aws) {
-            const params = { Bucket: config.aws.bucket, Key: fileUrl }
+        if (config.gcp) {
+            const destination = path.join(os.tmpdir(), path.basename(fileUrl));
+            new Storage(config.gcp)
+                .bucket(config.gcp.bucketName)
+                .file(fileUrl)
+                .download({ destination }, async (err) => {
+                    if (err) {
+                        console.error('Download error', err);
+                        reject(err);
+                    }
+                    resolve(destination);
+                });
+        } else if (config.aws) {
+            const params = { Bucket: config.aws.bucket, Key: fileUrl };
             return new AWS.S3().getObject(params, async (err, data) => {
                 if (err) {
                     console.error('Download error', err);
@@ -361,37 +412,49 @@ function downloadFile(config, fileUrl) {
                 fs.writeFileSync(fileName, data.Body);
                 resolve(fileName);
             });
-        }
-        const req = proto(config).get(
-            config.server + fileUrl,
-            { headers: getAuthHeader(config) },
-            (res) => {
-                if (res.statusCode !== 200) {
-                    console.error(`Download error: HTTP status code ${res.statusCode}`);
-                    return reject(`HTTP status code ${res.statusCode}`);
+        } else {
+            const req = proto(config).get(
+                config.server + fileUrl,
+                { headers: getAuthHeader(config) },
+                (res) => {
+                    if (res.statusCode !== 200) {
+                        console.error(`Download error: HTTP status code ${res.statusCode}`);
+                        return reject(`HTTP status code ${res.statusCode}`);
+                    }
+
+                    const fileName = path.join(os.tmpdir(), path.basename(fileUrl));
+                    const file = fs.createWriteStream(fileName);
+
+                    res.pipe(file);
+
+                    file.on('finish', () => {
+                        file.close(() => resolve(fileName));
+                    });
                 }
-
-                const fileName = path.join(os.tmpdir(), path.basename(fileUrl));
-                const file = fs.createWriteStream(fileName);
-
-                res.pipe(file);
-
-                file.on('finish', () => {
-                    file.close(() => resolve(fileName));
-                });
-            }
-        );
-        req.on('error', (e) => {
-            console.error('HTTP request error', e);
-            reject('HTTP request error: ' + e);
-        });
-        req.end();
+            );
+            req.on('error', (e) => {
+                console.error('HTTP request error', e);
+                reject('HTTP request error: ' + e);
+            });
+            req.end();
+        }
     });
 }
 
 function deleteFile(config, fileUrl) {
     return new Promise((resolve, reject) => {
-        if (config.aws) {
+        if (config.gcp) {
+            new Storage(config.gcp)
+                .bucket(config.gcp.bucketName)
+                .file(fileUrl)
+                .delete(async (err) => {
+                    if (err) {
+                        console.error('Delete error', err);
+                        return reject(err);
+                    }
+                    resolve();
+                });
+        } else if (config.aws) {
             const params = { Bucket: config.aws.bucket, Key: fileUrl };
             return new AWS.S3().deleteObject(params, async (err) => {
                 if (err) {
@@ -400,23 +463,24 @@ function deleteFile(config, fileUrl) {
                 }
                 resolve();
             });
-        }
-        const req = proto(config).request(
-            config.server + fileUrl,
-            { method: 'DELETE', headers: getAuthHeader(config) },
-            (res) => {
-                if (res.statusCode !== 204) {
-                    console.error(`Delete error: HTTP status code ${res.statusCode}`);
-                    return reject(`HTTP status code ${res.statusCode}`);
+        } else {
+            const req = proto(config).request(
+                config.server + fileUrl,
+                { method: 'DELETE', headers: getAuthHeader(config) },
+                (res) => {
+                    if (res.statusCode !== 204) {
+                        console.error(`Delete error: HTTP status code ${res.statusCode}`);
+                        return reject(`HTTP status code ${res.statusCode}`);
+                    }
+                    resolve();
                 }
-                resolve();
-            }
-        );
-        req.on('error', (e) => {
-            console.error('HTTP request error', e);
-            reject('HTTP request error: ' + e);
-        });
-        req.end();
+            );
+            req.on('error', (e) => {
+                console.error('HTTP request error', e);
+                reject('HTTP request error: ' + e);
+            });
+            req.end();
+        }
     });
 }
 
