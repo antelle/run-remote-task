@@ -53,7 +53,7 @@ This diagram explains the interaction without going too deep into details:
     }
     ```
 
-   If you're using Google Cloud Storage
+   If you're using Google Cloud Storage:
    ```json
    {
        "gcp": {
